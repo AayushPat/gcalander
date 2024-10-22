@@ -8,8 +8,8 @@ from googleapiclient.discovery import build
 # SCOPES define the API permissions
 SCOPES = ['https://www.googleapis.com/auth/calendar.events']
 
-CANVAS_API_URL = "https://canvas.jmu.edu/api/v1"
-CANVAS_API_TOKEN = "19~vLfZDvtYR3vDQTuLDwthMQUwvKVa9QBGA8D7JBKnYCJz7xxxRerV4ECK6TuLm267"  # Replace with your own Canvas API token
+CANVAS_API_URL = "https://canvas.jmu.edu/api/v1" #put your domain 
+CANVAS_API_TOKEN = "key"  # Replace with your own Canvas API token
 
 def authenticate_google_calendar():
     """Authenticate and return the Google Calendar service."""
