@@ -1,95 +1,112 @@
 import os
-import datetime
+import logging
 import requests
 from dateutil import parser
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-# SCOPES define the API permissions
+# -------------------------------
+# CONFIGURATION
+# -------------------------------
 SCOPES = ['https://www.googleapis.com/auth/calendar.events']
+CANVAS_API_URL = "https://canvas.jmu.edu/api/v1"
+CANVAS_API_TOKEN = os.getenv("CANVAS_API_TOKEN", "your_canvas_token_here")
+SERVICE_ACCOUNT_FILE = "gold-courage-436803-t1-0e34ed0c5447.json"
+TIMEZONE = "America/New_York"
 
-CANVAS_API_URL = "https://canvas.jmu.edu/api/v1" #put your domain 
-CANVAS_API_TOKEN = "key"  # Replace with your own Canvas API token
+# -------------------------------
+# LOGGING SETUP
+# -------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
+# -------------------------------
+# GOOGLE CALENDAR AUTHENTICATION
+# -------------------------------
 def authenticate_google_calendar():
-    """Authenticate and return the Google Calendar service."""
     creds = service_account.Credentials.from_service_account_file(
-        'gold-courage-436803-t1-0e34ed0c5447.json', scopes=SCOPES)
-    service = build('calendar', 'v3', credentials=creds)
-    return service
+        SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+    return build('calendar', 'v3', credentials=creds)
 
-def fetch_courses():
-    """Fetch all courses from Canvas."""
+# -------------------------------
+# CANVAS API HELPERS
+# -------------------------------
+def get_canvas_session():
+    session = requests.Session()
+    session.headers.update({'Authorization': f'Bearer {CANVAS_API_TOKEN}'})
+    return session
+
+def fetch_courses(session):
     url = f"{CANVAS_API_URL}/courses"
-    headers = {'Authorization': f'Bearer {CANVAS_API_TOKEN}'}
-    response = requests.get(url, headers=headers)
+    response = session.get(url)
+    response.raise_for_status()
+    return response.json()
 
-    if response.status_code == 200:
-        return response.json()
-    else:
-        print(f"Failed to fetch courses: {response.status_code} {response.text}")
-        return []
-
-def fetch_assignments(course_id):
-    """Fetch assignments for a given course ID."""
+def fetch_assignments(session, course_id):
     url = f"{CANVAS_API_URL}/courses/{course_id}/assignments"
-    headers = {'Authorization': f'Bearer {CANVAS_API_TOKEN}'}
-    response = requests.get(url, headers=headers)
+    response = session.get(url)
+    response.raise_for_status()
+    return response.json()
 
-    if response.status_code == 200:
-        return response.json()
-    else:
-        print(f"Failed to fetch assignments for course ID {course_id}: {response.status_code} {response.text}")
-        return []
+# -------------------------------
+# GOOGLE CALENDAR EVENT CREATION
+# -------------------------------
+def create_calendar_event(service, assignment):
+    due_date_str = assignment.get('due_at')
+    if not due_date_str:
+        logging.warning(f"Skipping '{assignment['name']}': No due date.")
+        return
 
-def add_to_google_calendar(assignments):
-    """Add assignments to Google Calendar."""
-    service = authenticate_google_calendar()
+    try:
+        due_time = parser.isoparse(due_date_str)
+        event = {
+            'summary': assignment['name'],
+            'start': {'dateTime': due_time.isoformat(), 'timeZone': TIMEZONE},
+            'end': {'dateTime': due_time.isoformat(), 'timeZone': TIMEZONE},
+        }
 
-    for assignment in assignments:
-        if assignment.get('due_at'):
-            try:
-                due_time = parser.isoparse(assignment['due_at'])
-                event = {
-                    'summary': assignment['name'],
-                    'start': {
-                        'dateTime': due_time.isoformat(),
-                        'timeZone': 'America/New_York',  # Adjust as needed
-                    },
-                    'end': {
-                        'dateTime': due_time.isoformat(),
-                        'timeZone': 'America/New_York',
-                    },
-                }
-                
-                # Insert event into Google Calendar
-                service.events().insert(calendarId='primary', body=event).execute()
-                print(f"Added assignment '{assignment['name']}' to Google Calendar.")
-            except Exception as e:
-                print(f"An error occurred while adding '{assignment['name']}': {e}")
-        else:
-            print(f"No due date for assignment: {assignment['name']}")
+        created_event = service.events().insert(calendarId='primary', body=event).execute()
+        logging.info(f"Added '{assignment['name']}' to Google Calendar. Event ID: {created_event.get('id')}")
 
+    except Exception as e:
+        logging.error(f"Error adding '{assignment['name']}': {e}")
+
+# -------------------------------
+# MAIN WORKFLOW
+# -------------------------------
 def main():
-    """Main function to fetch courses and assignments, and add them to Google Calendar."""
-    courses = fetch_courses()
-    
-    all_assignments = []
-    
-    for course in courses:
-        course_id = course['id']
-        assignments = fetch_assignments(course_id)
-        
-        # Print fetched assignments for debugging
-        for assignment in assignments:
-            print(f"Fetched assignment: {assignment['name']}, Due At: {assignment.get('due_at')}")
-        
-        all_assignments.extend(assignments)
+    logging.info("Starting Canvas to Google Calendar sync...")
 
-    if all_assignments:
-        add_to_google_calendar(all_assignments)
-    else:
-        print("No assignments to add to Google Calendar.")
+    session = get_canvas_session()
+    calendar_service = authenticate_google_calendar()
+
+    try:
+        courses = fetch_courses(session)
+        if not courses:
+            logging.info("No courses found.")
+            return
+
+        all_assignments = []
+        for course in courses:
+            assignments = fetch_assignments(session, course['id'])
+            logging.info(f"Fetched {len(assignments)} assignments for course '{course.get('name', 'Unknown')}'.")
+            all_assignments.extend(assignments)
+
+        if not all_assignments:
+            logging.info("No assignments to add.")
+            return
+
+        for assignment in all_assignments:
+            create_calendar_event(calendar_service, assignment)
+
+        logging.info("Sync completed successfully.")
+
+    except requests.HTTPError as e:
+        logging.error(f"HTTP Error: {e}")
+    except Exception as e:
+        logging.error(f"Unexpected error: {e}")
 
 if __name__ == '__main__':
     main()
